@@ -27,6 +27,6 @@ struct Card_projectApp: App {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(sharedModelContainer)
+        .modelContainer(for: Word.self)
     }
 }

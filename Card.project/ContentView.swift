@@ -1,61 +1,101 @@
-//
-//  ContentView.swift
-//  Card.project
-//
-//  Created by G-2028 on 2026/08/18.
-//
-
 import SwiftUI
 import SwiftData
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+    @Query(sort: \Word.english) private var words: [Word]
+
+    @State private var newEnglish = ""
+    @State private var newJapanese = ""
 
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+        NavigationStack { // ← 全体を1つの NavigationStack で囲む
+            VStack(spacing: 0) {
+                // 1. カード学習への遷移ボタン
+                NavigationLink(destination: StudyView()) {
+                    HStack {
+                        Image(systemName: "rectangle.portrait.on.rectangle.portrait.angled.fill")
+                            .font(.title2)
+                        Text("カード学習を始める (\(words.count)語)")
+                            .font(.headline)
                     }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(words.isEmpty ? Color.gray : Color.blue)
+                    .cornerRadius(12)
                 }
-                .onDelete(perform: deleteItems)
+                .disabled(words.isEmpty) // 単語が0件なら押せない
+                .padding()
+
+                Divider()
+
+                // 2. 単語追加フォーム
+                HStack {
+                    TextField("単語", text: $newEnglish)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("意味", text: $newJapanese)
+                        .textFieldStyle(.roundedBorder)
+                    Button("追加") {
+                        addWord()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding()
+
+                // 3. 単語リスト
+                List {
+                    ForEach(words) { word in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(word.english)
+                                    .font(.headline)
+                                Text(word.japanese)
+                                    .font(.subheadline)
+                                    .foregroundColor(.gray)
+                            }
+                        }
+                    }
+                    .onDelete(perform: deleteWords)
+                }
             }
+            .navigationTitle("単語帳")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .topBarTrailing) {
                     EditButton()
                 }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
             }
-        } detail: {
-            Text("Select an item")
         }
     }
 
-    private func addItem() {
+    private func addWord() {
+        // 空文字チェック（前後スペースを除外）
+        let trimmedEnglish = newEnglish.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedJapanese = newJapanese.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        guard !trimmedEnglish.isEmpty, !trimmedJapanese.isEmpty else { return }
+        
         withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
+            // 新しいWordモデルの作成
+            let newWord = Word(english: trimmedEnglish, japanese: trimmedJapanese)
+            
+            // データベースに挿入
+            modelContext.insert(newWord)
+            
+            // 明示的に保存を実行
+            try? modelContext.save()
+            
+            // 入力フォームの初期化
+            newEnglish = ""
+            newJapanese = ""
         }
     }
 
-    private func deleteItems(offsets: IndexSet) {
+    private func deleteWords(offsets: IndexSet) {
         withAnimation {
             for index in offsets {
-                modelContext.delete(items[index])
+                modelContext.delete(words[index])
             }
         }
     }
-}
-
-#Preview {
-    ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
 }
