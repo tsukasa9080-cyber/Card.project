@@ -7,6 +7,6 @@ struct Card_projectApp: App {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(for: Word.self)
+        .modelContainer(for: [Word.self, WordBook.self, TestResult.self])
     }
 }

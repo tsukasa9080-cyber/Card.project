@@ -1,6 +1,8 @@
 import SwiftUI
+import SwiftData
 
 struct CardView: View {
+    @Environment(\.modelContext) private var modelContext
     let word: Word
     @State private var isFlipped = false
 
@@ -18,11 +20,11 @@ struct CardView: View {
                             .font(.title)
                             .foregroundColor(.blue.opacity(0.6))
                         
-                        Text(word.english)
+                        Text(word.frontText)
                             .font(.system(size: 36, weight: .bold, design: .rounded))
                             .foregroundColor(.primary)
                         
-                        Text("タップして意味を表示")
+                        Text("タップして裏面を表示")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -41,9 +43,19 @@ struct CardView: View {
                 .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 5)
                 .overlay(
                     VStack(spacing: 16) {
-                        Text(word.japanese)
+                        Text(word.backText)
                             .font(.system(size: 36, weight: .bold, design: .rounded))
                             .foregroundColor(.blue)
+
+                        Button {
+                            word.isMemorized = true
+                            try? modelContext.save()
+                        } label: {
+                            Label("覚えた", systemImage: "checkmark.circle.fill")
+                                .font(.headline)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
                     }
                 )
                 // 裏面の文字が鏡文字にならないようにY軸で180度反転
