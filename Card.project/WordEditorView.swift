@@ -2,6 +2,11 @@ import SwiftUI
 import SwiftData
 
 struct WordEditorView: View {
+    private enum EditorField: Hashable {
+        case front
+        case back
+    }
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Bindable var word: Word
@@ -10,6 +15,7 @@ struct WordEditorView: View {
     @State private var backText: String
     @State private var isMemorized: Bool
     @State private var isDifficult: Bool
+    @FocusState private var focusedField: EditorField?
 
     init(word: Word) {
         self.word = word
@@ -22,11 +28,17 @@ struct WordEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("表面（問題）", text: $frontText)
-                TextField("裏面（答え）", text: $backText)
+                TextField("表面", text: $frontText)
+                    .focused($focusedField, equals: .front)
+                TextField("裏面", text: $backText)
+                    .focused($focusedField, equals: .back)
 
                 Toggle("学習済み", isOn: $isMemorized)
                 Toggle("苦手単語", isOn: $isDifficult)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                focusedField = nil
             }
             .navigationTitle("単語を編集")
             .toolbar {

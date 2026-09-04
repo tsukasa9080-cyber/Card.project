@@ -36,11 +36,26 @@ enum TestDirection: String, CaseIterable, Identifiable {
     }
 }
 
+enum TestScope: String, CaseIterable, Identifiable {
+    case all = "すべて"
+    case difficult = "苦手のみ"
+
+    var id: Self { self }
+
+    var iconName: String {
+        switch self {
+        case .all: "rectangle.stack"
+        case .difficult: "exclamationmark.triangle.fill"
+        }
+    }
+}
+
 struct TestView: View {
     @Environment(\.modelContext) private var modelContext
     let category: String
     let testMode: TestMode
     let testDirection: TestDirection
+    let testScope: TestScope
     @Query private var words: [Word]
 
     @State private var questions: [Word] = []
@@ -51,16 +66,26 @@ struct TestView: View {
     @State private var typedAnswer = ""
     @State private var hasFinished = false
 
-    init(category: String, testMode: TestMode, testDirection: TestDirection) {
+    init(category: String, testMode: TestMode, testDirection: TestDirection, testScope: TestScope) {
         self.category = category
         self.testMode = testMode
         self.testDirection = testDirection
-        _words = Query(
-            filter: #Predicate<Word> { word in
-                word.category == category
-            },
-            sort: \Word.english
-        )
+        self.testScope = testScope
+        if testScope == .difficult {
+            _words = Query(
+                filter: #Predicate<Word> { word in
+                    word.category == category && word.isDifficult
+                },
+                sort: \Word.english
+            )
+        } else {
+            _words = Query(
+                filter: #Predicate<Word> { word in
+                    word.category == category
+                },
+                sort: \Word.english
+            )
+        }
     }
 
     private var currentQuestion: Word? {
@@ -78,7 +103,7 @@ struct TestView: View {
                 ProgressView()
             }
         }
-        .navigationTitle("\(category)・\(testDirection.rawValue)テスト")
+        .navigationTitle("\(testScope.rawValue)・\(testDirection.rawValue)テスト")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             if questions.isEmpty {
@@ -209,10 +234,11 @@ struct TestView: View {
         selectedAnswer = choice
         if isCorrect(choice, for: question) {
             correctAnswers += 1
+            question.isMemorized = true
         } else {
             question.isDifficult = true
-            try? modelContext.save()
         }
+        try? modelContext.save()
     }
 
     private func nextQuestion() {
