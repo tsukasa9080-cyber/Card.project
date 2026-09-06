@@ -65,6 +65,17 @@ struct TestView: View {
     @State private var selectedAnswer: String?
     @State private var typedAnswer = ""
     @State private var hasFinished = false
+    @State private var usesAI = false
+    @State private var isBusy = false
+    @State private var aiQuestion: String?
+    @State private var aiFeedback: String?
+    @State private var errorMessage: String?
+    @State private var aiTask: Task<Void, Never>?
+    @State private var requestID = UUID()
+    @State private var recordedCorrect = false
+    @State private var previousMemorized = false
+    @State private var previousDifficult = false
+
 
     init(category: String, testMode: TestMode, testDirection: TestDirection, testScope: TestScope) {
         self.category = category
@@ -105,9 +116,16 @@ struct TestView: View {
         }
         .navigationTitle("\(testScope.rawValue)・\(testDirection.rawValue)テスト")
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear {
+            requestID = UUID()
+            aiTask?.cancel()
+            isBusy = false
+        }
         .onAppear {
             if questions.isEmpty {
                 startTest()
+            } else if usesAI && testMode == .multipleChoice && choices.isEmpty && !hasFinished {
+                prepareChoices()
             }
         }
     }
@@ -134,7 +152,16 @@ struct TestView: View {
     }
 
     private func questionView(_ question: Word) -> some View {
+        ScrollView {
         VStack(spacing: 24) {
+            Toggle("AIで問題作成・入力採点", isOn: $usesAI)
+                .disabled(isBusy || selectedAnswer != nil)
+                .onChange(of: usesAI) { _, _ in
+                    aiQuestion = nil
+                    aiFeedback = nil
+                    errorMessage = nil
+                    prepareChoices()
+                }
             ProgressView(value: Double(questionIndex + 1), total: Double(questions.count))
                 .tint(.blue)
 
@@ -142,6 +169,7 @@ struct TestView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
+            if let aiQuestion { Text(aiQuestion).font(.headline) }
             Text("「\(testDirection.prompt(for: question))」")
                 .font(.system(size: 32, weight: .bold, design: .rounded))
                 .multilineTextAlignment(.center)
@@ -152,6 +180,13 @@ struct TestView: View {
             Text(testMode == .multipleChoice ? "正しい答えを選んでください" : "答えを入力してください")
                 .foregroundStyle(.secondary)
 
+            if isBusy { ProgressView("AIが処理中…") }
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(.red)
+                if usesAI && testMode == .multipleChoice {
+                    Button("問題作成を再試行") { prepareChoices() }.disabled(isBusy)
+                }
+            }
             if testMode == .multipleChoice {
                 multipleChoiceView(question)
             } else {
@@ -159,7 +194,21 @@ struct TestView: View {
             }
 
             if selectedAnswer != nil {
-                if testMode == .typing {
+                if let aiFeedback {
+                    Text(aiFeedback).font(.callout)
+                    Button(recordedCorrect ? "不正解に訂正" : "正解に訂正") {
+                        let corrected = !recordedCorrect
+                        correctAnswers += corrected ? 1 : -1
+                        recordedCorrect = corrected
+                        question.isMemorized = corrected ? true : previousMemorized
+                        question.isDifficult = corrected ? previousDifficult : true
+                        try? modelContext.save()
+                        self.aiFeedback = corrected ? "正解に訂正しました。" : "不正解に訂正しました。"
+                    }.buttonStyle(.bordered)
+                    Text("AIによる判定です。必要に応じて登録した答えを確認してください。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if testMode == .typing && aiFeedback == nil {
                     Text(isCorrect(selectedAnswer ?? "", for: question) ? "正解！" : "不正解　正解: \(testDirection.answer(for: question))")
                         .font(.headline)
                         .foregroundStyle(isCorrect(selectedAnswer ?? "", for: question) ? .green : .red)
@@ -172,6 +221,7 @@ struct TestView: View {
             }
         }
         .padding()
+        }
     }
 
     private func multipleChoiceView(_ question: Word) -> some View {
@@ -193,7 +243,7 @@ struct TestView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(buttonColor(for: choice, correctAnswer: testDirection.answer(for: question)))
-                .disabled(selectedAnswer != nil)
+                .disabled(selectedAnswer != nil || isBusy)
             }
         }
     }
@@ -204,13 +254,13 @@ struct TestView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
-                .disabled(selectedAnswer != nil)
+                .disabled(selectedAnswer != nil || isBusy)
 
             Button("回答する") {
                 answer(typedAnswer, for: question)
             }
             .buttonStyle(.bordered)
-            .disabled(typedAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedAnswer != nil)
+            .disabled(typedAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedAnswer != nil || isBusy)
         }
     }
 
@@ -221,6 +271,12 @@ struct TestView: View {
     }
 
     private func startTest() {
+        requestID = UUID()
+        aiTask?.cancel()
+        isBusy = false
+        aiQuestion = nil
+        aiFeedback = nil
+        errorMessage = nil
         questions = words.shuffled()
         questionIndex = 0
         correctAnswers = 0
@@ -231,8 +287,38 @@ struct TestView: View {
     }
 
     private func answer(_ choice: String, for question: Word) {
+        guard selectedAnswer == nil && !isBusy else { return }
+        errorMessage = nil
+        if usesAI && testMode == .typing {
+            isBusy = true
+            let id = UUID()
+            requestID = id
+            let prompt = testDirection.prompt(for: question)
+            let expected = testDirection.answer(for: question)
+            aiTask = Task { @MainActor in
+                do {
+                    let grade: MeaningGenerator.Grade = try await MeaningGenerator.assist("grade", prompt: prompt, expected: expected, answer: choice)
+                    guard !Task.isCancelled && requestID == id else { return }
+                    aiFeedback = (grade.correct ? "正解！ " : "不正解。正解: \(expected)\n") + grade.feedback
+                    recordAnswer(choice, correct: grade.correct, question: question)
+                } catch {
+                    guard !Task.isCancelled && requestID == id else { return }
+                    errorMessage = error.localizedDescription
+                }
+                isBusy = false
+            }
+        } else {
+            recordAnswer(choice, correct: isCorrect(choice, for: question), question: question)
+        }
+    }
+
+    private func recordAnswer(_ choice: String, correct: Bool, question: Word) {
+        guard selectedAnswer == nil else { return }
+        previousMemorized = question.isMemorized
+        previousDifficult = question.isDifficult
+        recordedCorrect = correct
         selectedAnswer = choice
-        if isCorrect(choice, for: question) {
+        if correct {
             correctAnswers += 1
             question.isMemorized = true
         } else {
@@ -242,6 +328,10 @@ struct TestView: View {
     }
 
     private func nextQuestion() {
+        guard !isBusy else { return }
+        aiQuestion = nil
+        aiFeedback = nil
+        errorMessage = nil
         if questionIndex + 1 == questions.count {
             saveResult()
             hasFinished = true
@@ -261,6 +351,32 @@ struct TestView: View {
 
         guard let question = currentQuestion else {
             choices = []
+            return
+        }
+
+        if usesAI {
+            choices = []
+            isBusy = true
+            errorMessage = nil
+            let id = UUID()
+            requestID = id
+            let prompt = testDirection.prompt(for: question)
+            let expected = testDirection.answer(for: question)
+            aiTask = Task { @MainActor in
+                do {
+                    let generated: MeaningGenerator.Question = try await MeaningGenerator.assist("question", prompt: prompt, expected: expected)
+                    guard !Task.isCancelled && requestID == id else { return }
+                    guard generated.choices.count == 4, generated.choices.contains(expected), Set(generated.choices).count == 4 else {
+                        throw MeaningGenerationError.invalidResponse
+                    }
+                    aiQuestion = generated.question
+                    choices = generated.choices.shuffled()
+                } catch {
+                    guard !Task.isCancelled && requestID == id else { return }
+                    errorMessage = error.localizedDescription
+                }
+                isBusy = false
+            }
             return
         }
 

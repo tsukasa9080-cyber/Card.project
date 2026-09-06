@@ -6,7 +6,22 @@ struct CardView: View {
     let word: Word
     @State private var isFlipped = false
 
+    @State private var showsExplanation = false
+
     var body: some View {
+        VStack {
+        card
+        Button { showsExplanation = true } label: {
+            Label("AIで解説・例文を見る", systemImage: "sparkles")
+        }
+        .buttonStyle(.bordered)
+        }
+        .sheet(isPresented: $showsExplanation) {
+            AIExplanationView(prompt: word.frontText, expected: word.backText)
+        }
+    }
+
+    private var card: some View {
         ZStack {
             // ---------------------------------
             // 表面 (英語)
@@ -73,6 +88,52 @@ struct CardView: View {
         .onTapGesture {
             withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
                 isFlipped.toggle()
+            }
+        }
+    }
+}
+
+struct AIExplanationView: View {
+    let prompt: String
+    let expected: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var explanation: MeaningGenerator.Explanation?
+    @State private var error: String?
+    @State private var attempt = 0
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text(prompt).font(.title.bold())
+                    if let explanation {
+                        Text("解説").font(.headline)
+                        Text(explanation.explanation)
+                        Text("例文・具体例").font(.headline)
+                        Text(explanation.example)
+                        Text("覚え方").font(.headline)
+                        Text(explanation.hint)
+                        Text("AIの説明には誤りが含まれる場合があります。登録した答えと合わせて確認してください。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if let error {
+                        Text(error).foregroundStyle(.red)
+                        Button("再試行") { attempt += 1 }
+                    } else {
+                        ProgressView("AIが解説を作成中…")
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding()
+            }
+            .navigationTitle("AI学習サポート")
+            .toolbar { Button("閉じる") { dismiss() } }
+            .task(id: attempt) {
+                error = nil
+                do {
+                    let result: MeaningGenerator.Explanation = try await MeaningGenerator.assist("explain", prompt: prompt, expected: expected)
+                    try Task.checkCancellation()
+                    explanation = result
+                } catch {
+                    if !Task.isCancelled { self.error = error.localizedDescription }
+                }
             }
         }
     }

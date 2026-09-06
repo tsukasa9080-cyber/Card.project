@@ -58,6 +58,39 @@ struct MeaningGenerator {
         return content
     }
 
+    struct Explanation: Decodable {
+        let explanation: String
+        let example: String
+        let hint: String
+    }
+    struct Question: Decodable {
+        let question: String
+        let choices: [String]
+    }
+    struct Grade: Decodable {
+        let correct: Bool
+        let feedback: String
+    }
+
+    static func assist<T: Decodable>(_ action: String, prompt: String, expected: String, answer: String? = nil) async throws -> T {
+        guard let endpoint else { throw MeaningGenerationError.missingServerURL }
+        let url = endpoint.deletingLastPathComponent().appending(path: "ai/" + action)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 100
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body = ["prompt": prompt, "expected": expected]
+        if let answer { body["answer"] = answer }
+        request.httpBody = try JSONEncoder().encode(body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw MeaningGenerationError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else {
+            let error = try? JSONDecoder().decode(ServerResponse.self, from: data)
+            throw MeaningGenerationError.requestFailed(error?.error ?? "AIとの通信に失敗しました。")
+        }
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
     private static var endpoint: URL? {
         let storedURL = UserDefaults.standard.string(forKey: "meaningServerURL")
         let infoPlistURL = Bundle.main.object(forInfoDictionaryKey: "MeaningServerURL") as? String
