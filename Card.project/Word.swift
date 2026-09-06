@@ -8,12 +8,12 @@ final class Word {
     var japanese: String
     var isMemorized: Bool
     var isDifficult: Bool = false
-    var category: String = "未分類"
+    var category: String = "未登録"
     
     var frontText: String { english }
     var backText: String { japanese }
 
-    init(frontText: String, backText: String, isMemorized: Bool = false, isDifficult: Bool = false, category: String = "未分類") {
+    init(frontText: String, backText: String, isMemorized: Bool = false, isDifficult: Bool = false, category: String = "未登録") {
         self.english = frontText
         self.japanese = backText
         self.isMemorized = isMemorized

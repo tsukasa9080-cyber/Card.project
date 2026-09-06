@@ -6,8 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		63C2C858304D46F20054CD60 /* MeaningGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63C2C857304D46F10054CD60 /* MeaningGenerator.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		6374B84630339B8C00E48351 /* Card.project.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Card.project.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		63C2C857304D46F10054CD60 /* MeaningGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeaningGenerator.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -34,6 +39,7 @@
 			children = (
 				6374B84830339B8C00E48351 /* Card.project */,
 				6374B84730339B8C00E48351 /* Products */,
+				63C2C857304D46F10054CD60 /* MeaningGenerator.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -119,6 +125,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				63C2C858304D46F20054CD60 /* MeaningGenerator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -254,6 +261,7 @@
 				DEVELOPMENT_TEAM = 6S8796QZ3Q;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AppInfo.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -286,6 +294,7 @@
 				DEVELOPMENT_TEAM = 6S8796QZ3Q;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AppInfo.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

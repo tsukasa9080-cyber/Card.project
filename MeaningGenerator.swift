@@ -35,6 +35,7 @@ struct MeaningGenerator {
         guard let endpoint else { throw MeaningGenerationError.missingServerURL }
 
         var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 100
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [

@@ -13,7 +13,8 @@ struct ContentView: View {
     @Query(sort: \WordBook.name) private var wordBooks: [WordBook]
     @Query(sort: \TestResult.takenAt, order: .reverse) private var testResults: [TestResult]
 
-    @AppStorage("defaultCategoryName") private var defaultCategoryName = "未分類"
+    @AppStorage("defaultCategoryName") private var defaultCategoryName = "未登録"
+    @AppStorage("meaningServerURL") private var meaningServerURL = "http://127.0.0.1:3000"
     @State private var selectedCategory: String
     @State private var studyMode: StudyMode = .unmemorized
     @State private var testMode: TestMode = .multipleChoice
@@ -34,12 +35,17 @@ struct ContentView: View {
     @State private var selectedWordIDs = Set<PersistentIdentifier>()
     @State private var wordListEditMode: EditMode = .inactive
     @State private var isConfirmingBulkDeletion = false
+    @State private var isGeneratingMeaning = false
+    @State private var generationMessage = ""
+    @State private var isShowingGenerationMessage = false
+    @State private var isSettingMeaningServerURL = false
+    @State private var draftMeaningServerURL = ""
     @FocusState private var focusedEntryField: EntryField?
     @FocusState private var isSearchFocused: Bool
 
     init() {
         _selectedCategory = State(
-            initialValue: UserDefaults.standard.string(forKey: "defaultCategoryName") ?? "未分類"
+            initialValue: UserDefaults.standard.string(forKey: "defaultCategoryName") ?? "未登録"
         )
     }
 
@@ -124,6 +130,18 @@ struct ContentView: View {
         } message: {
             Text(importMessage)
         }
+        .alert("生成AI", isPresented: $isShowingGenerationMessage) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(generationMessage)
+        }
+        .alert("生成AIサーバーURL", isPresented: $isSettingMeaningServerURL) {
+            TextField("http://127.0.0.1:3000", text: $draftMeaningServerURL)
+            Button("キャンセル", role: .cancel) { draftMeaningServerURL = meaningServerURL }
+            Button("保存") { saveMeaningServerURL() }
+        } message: {
+            Text("OpenAI APIキーではなく、自分のサーバーURLを入力してください。")
+        }
         .alert("選択した\(selectedWordIDs.count)語を削除しますか？", isPresented: $isConfirmingBulkDeletion) {
             Button("削除", role: .destructive) {
                 deleteSelectedWords()
@@ -202,6 +220,20 @@ struct ContentView: View {
                     TextField("表面", text: $newEnglish)
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedEntryField, equals: .front)
+
+                    Button {
+                        dismissKeyboard()
+                        generateMeaning()
+                    } label: {
+                        if isGeneratingMeaning {
+                            ProgressView()
+                        } else {
+                            Label("生成", systemImage: "sparkles")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isGeneratingMeaning || newEnglish.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
                     TextField("裏面", text: $newJapanese)
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedEntryField, equals: .back)
@@ -292,6 +324,13 @@ struct ContentView: View {
                             Label("この単語帳をCSVで保存", systemImage: "square.and.arrow.up")
                         }
                         .disabled(displayedWords.isEmpty)
+                        Divider()
+                        Button {
+                            draftMeaningServerURL = meaningServerURL
+                            isSettingMeaningServerURL = true
+                        } label: {
+                            Label("生成AIサーバーURLを設定", systemImage: "server.rack")
+                        }
                     } label: { Image(systemName: "ellipsis.circle") }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -461,6 +500,27 @@ struct ContentView: View {
         try? modelContext.save()
         newEnglish = ""
         newJapanese = ""
+    }
+
+    private func generateMeaning() {
+        let front = newEnglish.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !front.isEmpty else { return }
+        isGeneratingMeaning = true
+        Task {
+            do {
+                newJapanese = try await MeaningGenerator.generateMeaning(for: front)
+                focusedEntryField = .back
+            } catch {
+                generationMessage = error.localizedDescription
+                isShowingGenerationMessage = true
+            }
+            isGeneratingMeaning = false
+        }
+    }
+
+    private func saveMeaningServerURL() {
+        meaningServerURL = draftMeaningServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        draftMeaningServerURL = meaningServerURL
     }
 
     private func dismissKeyboard() {

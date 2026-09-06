@@ -75,7 +75,6 @@ struct StudyView: View {
     }
     
     var body: some View {
-        // ※ ここにあった NavigationStack を削除しました
         VStack {
             if displayedWords.isEmpty {
                 ContentUnavailableView(
