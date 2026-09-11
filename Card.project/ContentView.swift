@@ -3,6 +3,26 @@ import SwiftData
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    private enum MainTab: Int, CaseIterable, Identifiable {
+        case words, study, test
+        var id: Int { rawValue }
+        var title: String {
+            switch self {
+            case .words: "単語登録"
+            case .study: "学習"
+            case .test: "テスト"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .words: "square.and.pencil"
+            case .study: "rectangle.portrait.on.rectangle.portrait.angled.fill"
+            case .test: "checkmark.seal"
+            }
+        }
+    }
+    @State private var selectedTab: MainTab = .words
+
     private enum EntryField: Hashable {
         case front
         case back
@@ -29,12 +49,14 @@ struct ContentView: View {
     @State private var searchText = ""
     @State private var editingWord: Word?
     @State private var isImportingCSV = false
+    @State private var receivedBook: SharedWordBook?
+    @State private var showsExchange = false
     @State private var isExportingCSV = false
     @State private var importMessage = ""
     @State private var isShowingImportResult = false
     @State private var selectedWordIDs = Set<PersistentIdentifier>()
-    @State private var wordListEditMode: EditMode = .inactive
     @State private var isConfirmingBulkDeletion = false
+    @State private var saveError: String?
     @State private var isGeneratingMeaning = false
     @State private var generationMessage = ""
     @State private var isShowingGenerationMessage = false
@@ -101,16 +123,26 @@ struct ContentView: View {
     }
 
     var body: some View {
-        TabView {
-            wordsTab
-                .tabItem { Label("単語登録", systemImage: "square.and.pencil") }
+        fileHandlingView
+    }
 
-            studyTab
-                .tabItem { Label("学習", systemImage: "rectangle.portrait.on.rectangle.portrait.angled.fill") }
-
-            testTab
-                .tabItem { Label("テスト", systemImage: "checkmark.seal") }
+    private var mainTabs: some View {
+        TabView(selection: $selectedTab) {
+            wordsTab.tag(MainTab.words)
+            studyTab.tag(MainTab.study)
+            testTab.tag(MainTab.test)
         }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            mainTabBar
+        }
+        .onChange(of: selectedTab) { _, _ in
+            dismissKeyboard()
+        }
+    }
+
+    private var alertsView: some View {
+        mainTabs
         .alert("新しい単語帳", isPresented: $isAddingWordBook) {
             TextField("例: 英検2級", text: $newWordBookName)
             Button("キャンセル", role: .cancel) { newWordBookName = "" }
@@ -125,7 +157,7 @@ struct ContentView: View {
         } message: {
             Text("登録済みの単語とテスト結果も新しい名前へ引き継がれます。")
         }
-        .alert("CSVの読み込み", isPresented: $isShowingImportResult) {
+        .alert("ファイルの読み込み", isPresented: $isShowingImportResult) {
             Button("OK", role: .cancel) { }
         } message: {
             Text(importMessage)
@@ -150,15 +182,62 @@ struct ContentView: View {
         } message: {
             Text("この操作は取り消せません。")
         }
+        .alert("保存エラー", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+            Button("OK", role: .cancel) { saveError = nil }
+        } message: {
+            Text(saveError ?? "")
+        }
+    }
+
+    private var sheetsView: some View {
+        alertsView
         .sheet(item: $editingWord) { word in
             WordEditorView(word: word)
         }
+        .sheet(isPresented: $showsExchange) {
+            NavigationStack {
+                List {
+                    Section("送る単語帳") {
+                        Text(selectedCategory).font(.headline)
+                        Text("\(displayedWords.count)語")
+                        ShareLink(item: sharedWordBook, preview: SharePreview(selectedCategory)) {
+                            Label("単語帳を送る", systemImage: "square.and.arrow.up")
+                        }.disabled(displayedWords.isEmpty)
+                    }
+                    Section {
+                        Text("共有メニューでAirDropやメッセージなどを選べます。相手にもこのアプリが必要です。学習状況やテスト結果は含まれません。")
+                        Text("受け取るときは、受信した.cardbookファイルを開くか、メニューの「ファイルから読み込む」を使ってください。")
+                    }
+                }
+                .navigationTitle("単語帳を交換")
+                .toolbar { Button("閉じる") { showsExchange = false } }
+            }
+        }
+        .sheet(item: $receivedBook) { book in
+            WordBookImportView(book: book) { name in
+                selectedCategory = name
+            }
+        }
+    }
+
+    private var sharedWordBook: SharedWordBook {
+        let cards = displayedWords.map { SharedWordBook.Card(front: $0.frontText, back: $0.backText) }
+        return SharedWordBook(version: 1, name: selectedCategory, cards: cards)
+    }
+
+    private var fileHandlingView: some View {
+        sheetsView
+        .onOpenURL { url in
+            receiveBook(url)
+        }
         .fileImporter(
             isPresented: $isImportingCSV,
-            allowedContentTypes: [.commaSeparatedText, .plainText]
+            allowedContentTypes: [.cardBook, .commaSeparatedText, .plainText]
         ) { result in
             switch result {
-            case .success(let url): importCSV(from: url)
+            case .success(let url):
+                if url.pathExtension.lowercased() == "cardbook" { receiveBook(url) }
+                else { importCSV(from: url) }
             case .failure(let error):
                 importMessage = "CSVを開けませんでした。\n\(error.localizedDescription)"
                 isShowingImportResult = true
@@ -175,6 +254,30 @@ struct ContentView: View {
                 isShowingImportResult = true
             }
         }
+    }
+
+    private var mainTabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(MainTab.allCases) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { selectedTab = tab }
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.icon).font(.system(size: 21))
+                        Text(tab.title).font(.caption)
+                    }
+                    .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+            }
+        }
+        .padding(.top, 4)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
     }
 
     private var studyTab: some View {
@@ -210,102 +313,82 @@ struct ContentView: View {
         }
     }
 
+    private var wordRegistrationForm: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("表面 · 単語・用語", systemImage: "rectangle.portrait")
+                    .font(.subheadline.weight(.semibold))
+                TextField("例：apple / 光合成", text: $newEnglish, axis: .vertical)
+                    .lineLimit(1...3)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($focusedEntryField, equals: .front)
+                    .padding(12)
+                    .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+                    .accessibilityLabel("表面の単語・用語")
+                    .disabled(isGeneratingMeaning)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Label("裏面 · 意味・答え", systemImage: "text.alignleft")
+                    .font(.subheadline.weight(.semibold))
+                TextField("意味を入力、またはAIで生成", text: $newJapanese, axis: .vertical)
+                    .lineLimit(3...6)
+                    .focused($focusedEntryField, equals: .back)
+                    .padding(12)
+                    .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+                    .accessibilityLabel("裏面の意味・答え")
+                    .disabled(isGeneratingMeaning)
+
+                Button {
+                    dismissKeyboard()
+                    generateMeaning()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isGeneratingMeaning { ProgressView() }
+                        Label(isGeneratingMeaning ? "意味を生成中…" : "AIで意味を生成", systemImage: "sparkles")
+                    }
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isGeneratingMeaning || newEnglish.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Text("生成した意味は、確認してから編集できます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                dismissKeyboard()
+                addWord()
+            } label: {
+                Label("単語帳に追加", systemImage: "plus.circle.fill")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isGeneratingMeaning || newEnglish.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newJapanese.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+    }
+
     private var wordsTab: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 wordBookSelector
                     .padding()
 
-                HStack {
-                    TextField("表面", text: $newEnglish)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($focusedEntryField, equals: .front)
-
-                    Button {
-                        dismissKeyboard()
-                        generateMeaning()
-                    } label: {
-                        if isGeneratingMeaning {
-                            ProgressView()
-                        } else {
-                            Label("生成", systemImage: "sparkles")
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isGeneratingMeaning || newEnglish.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    TextField("裏面", text: $newJapanese)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($focusedEntryField, equals: .back)
-                    Button("追加") {
-                        dismissKeyboard()
-                        addWord()
-                    }
-                        .buttonStyle(.borderedProminent)
-                }
-                .padding(.horizontal)
-                .padding(.bottom)
-
                 List {
+                    Section {
+                        wordRegistrationForm
+                            .listRowInsets(EdgeInsets(top: 18, leading: 16, bottom: 18, trailing: 16))
+                    } header: {
+                        Text("新しい単語")
+                    }
+
                     ForEach(filteredWords) { word in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(word.frontText).font(.headline)
-                                Text(word.backText).font(.subheadline).foregroundStyle(.secondary)
-                            }
-
-                            if wordListEditMode == .inactive {
-                                Spacer()
-                                Button {
-                                    dismissKeyboard()
-                                    word.isMemorized.toggle()
-                                    try? modelContext.save()
-                                } label: {
-                                    Label(
-                                        "覚えた",
-                                        systemImage: word.isMemorized ? "checkmark.circle.fill" : "circle"
-                                    )
-                                    .foregroundStyle(word.isMemorized ? .green : .secondary)
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel(word.isMemorized ? "学習済みを取り消す" : "覚えた")
-
-                                Button {
-                                    dismissKeyboard()
-                                    word.isDifficult.toggle()
-                                    try? modelContext.save()
-                                } label: {
-                                    Label(
-                                        "苦手",
-                                        systemImage: word.isDifficult ? "exclamationmark.triangle.fill" : "exclamationmark.triangle"
-                                    )
-                                    .foregroundStyle(word.isDifficult ? .orange : .secondary)
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel(word.isDifficult ? "苦手登録を取り消す" : "苦手単語に登録する")
-
-                                Button {
-                                    dismissKeyboard()
-                                    editingWord = word
-                                } label: {
-                                    Label("編集", systemImage: "pencil")
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel("この単語を編集する")
-                            } else {
-                                Spacer()
-                                Image(systemName: selectedWordIDs.contains(word.persistentModelID) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(selectedWordIDs.contains(word.persistentModelID) ? .blue : .secondary)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard wordListEditMode == .active else { return }
-                            toggleWordSelection(word)
-                        }
-                        .accessibilityElement(children: wordListEditMode == .active ? .ignore : .contain)
-                        .accessibilityLabel(wordListEditMode == .active ? "\\(word.frontText) を選択" : "")
+                        wordRow(word)
                     }
                 }
             }
@@ -317,8 +400,11 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
+                        Button { showsExchange = true } label: {
+                            Label("単語帳を交換", systemImage: "person.2.wave.2")
+                        }
                         Button { isImportingCSV = true } label: {
-                            Label("CSVから一括登録", systemImage: "square.and.arrow.down")
+                            Label("ファイルから読み込む", systemImage: "square.and.arrow.down")
                         }
                         Button { isExportingCSV = true } label: {
                             Label("この単語帳をCSVで保存", systemImage: "square.and.arrow.up")
@@ -334,29 +420,93 @@ struct ContentView: View {
                     } label: { Image(systemName: "ellipsis.circle") }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if wordListEditMode == .active {
-                        HStack {
-                            Button("削除（\(selectedWordIDs.count)）", role: .destructive) {
-                                isConfirmingBulkDeletion = true
-                            }
-                            .disabled(selectedWordIDs.isEmpty)
-
-                            Button("完了") {
-                                wordListEditMode = .inactive
-                                selectedWordIDs.removeAll()
-                            }
-                        }
-                    } else {
-                        Button("選択") {
-                            dismissKeyboard()
-                            wordListEditMode = .active
-                        }
+                    Button("削除（\(selectedWordIDs.count)）", role: .destructive) {
+                        dismissKeyboard()
+                        isConfirmingBulkDeletion = true
                     }
+                    .disabled(selectedWordIDs.isEmpty)
                 }
             }
             .searchable(text: $searchText, prompt: "検索")
             .searchFocused($isSearchFocused)
+            .onChange(of: selectedCategory) { _, _ in
+                selectedWordIDs.removeAll()
+            }
+            .onChange(of: searchText) { _, _ in
+                selectedWordIDs.formIntersection(filteredWords.map(\.persistentModelID))
+            }
         }
+    }
+
+
+    private func wordRow(_ word: Word) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                dismissKeyboard()
+                toggleWordSelection(word)
+            } label: {
+                HStack {
+                    Image(systemName: selectedWordIDs.contains(word.persistentModelID) ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selectedWordIDs.contains(word.persistentModelID) ? .blue : .secondary)
+                    VStack(alignment: .leading) {
+                        Text(word.frontText).font(.headline)
+                        Text(word.backText).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(word.frontText)、\(word.backText)")
+            .accessibilityValue(selectedWordIDs.contains(word.persistentModelID) ? "選択中" : "未選択")
+            .accessibilityHint("タップして削除対象の選択を切り替えます")
+
+            HStack(spacing: 16) {
+                Button {
+                    dismissKeyboard()
+                    word.isMemorized.toggle()
+                    try? modelContext.save()
+                } label: {
+                    Label(
+                        "覚えた",
+                        systemImage: word.isMemorized ? "checkmark.circle.fill" : "circle"
+                    )
+                    .foregroundStyle(word.isMemorized ? .green : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(word.isMemorized ? "学習済みを取り消す" : "覚えた")
+
+                Button {
+                    dismissKeyboard()
+                    word.isDifficult.toggle()
+                    try? modelContext.save()
+                } label: {
+                    Label(
+                        "苦手",
+                        systemImage: word.isDifficult ? "exclamationmark.triangle.fill" : "exclamationmark.triangle"
+                    )
+                    .foregroundStyle(word.isDifficult ? .orange : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(word.isDifficult ? "苦手登録を取り消す" : "苦手単語に登録する")
+
+                Spacer(minLength: 0)
+                Button {
+                    dismissKeyboard()
+                    editingWord = word
+                } label: {
+                    Label("編集", systemImage: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("この単語を編集する")
+            }
+            .font(.subheadline)
+            .labelStyle(.titleAndIcon)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
     }
 
     private var testTab: some View {
@@ -496,10 +646,16 @@ struct ContentView: View {
         let front = newEnglish.trimmingCharacters(in: .whitespacesAndNewlines)
         let back = newJapanese.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !front.isEmpty, !back.isEmpty else { return }
-        modelContext.insert(Word(frontText: front, backText: back, category: selectedCategory))
-        try? modelContext.save()
-        newEnglish = ""
-        newJapanese = ""
+        let word = Word(frontText: front, backText: back, category: selectedCategory)
+        modelContext.insert(word)
+        do {
+            try modelContext.save()
+            newEnglish = ""
+            newJapanese = ""
+        } catch {
+            modelContext.delete(word)
+            saveError = "単語を追加できませんでした。\(error.localizedDescription)"
+        }
     }
 
     private func generateMeaning() {
@@ -574,12 +730,30 @@ struct ContentView: View {
     }
 
     private func deleteSelectedWords() {
-        for word in words where selectedWordIDs.contains(word.persistentModelID) {
-            modelContext.delete(word)
+        let context = ModelContext(modelContext.container)
+        context.autosaveEnabled = false
+        do {
+            let savedWords = try context.fetch(FetchDescriptor<Word>())
+            for word in savedWords where word.category == selectedCategory && selectedWordIDs.contains(word.persistentModelID) {
+                context.delete(word)
+            }
+            try context.save()
+            selectedWordIDs.removeAll()
+        } catch {
+            context.rollback()
+            saveError = "削除できませんでした。選択した単語は残っています。\(error.localizedDescription)"
         }
-        try? modelContext.save()
-        selectedWordIDs.removeAll()
-        wordListEditMode = .inactive
+    }
+
+    private func receiveBook(_ url: URL) {
+        do {
+            let book = try SharedWordBook.read(url)
+            showsExchange = false
+            receivedBook = book
+        } catch {
+            importMessage = "単語帳を開けませんでした。\n\(error.localizedDescription)"
+            isShowingImportResult = true
+        }
     }
 
     private func importCSV(from url: URL) {
@@ -614,5 +788,13 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView().modelContainer(for: [Word.self, WordBook.self, TestResult.self], inMemory: true)
+    let container = try! ModelContainer(
+        for: Word.self, WordBook.self, TestResult.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+    )
+    let category = UserDefaults.standard.string(forKey: "defaultCategoryName") ?? "未登録"
+    container.mainContext.insert(Word(frontText: "apple", backText: "りんご", category: category))
+    container.mainContext.insert(Word(frontText: "book", backText: "本", category: category))
+    container.mainContext.insert(Word(frontText: "study", backText: "勉強する", category: category))
+    return ContentView().modelContainer(container)
 }

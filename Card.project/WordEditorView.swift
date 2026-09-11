@@ -15,6 +15,7 @@ struct WordEditorView: View {
     @State private var backText: String
     @State private var isMemorized: Bool
     @State private var isDifficult: Bool
+    @State private var saveError: String?
     @FocusState private var focusedField: EditorField?
 
     init(word: Word) {
@@ -28,9 +29,12 @@ struct WordEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("表面", text: $frontText)
+                TextField("表面", text: $frontText, axis: .vertical)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                     .focused($focusedField, equals: .front)
-                TextField("裏面", text: $backText)
+                TextField("裏面", text: $backText, axis: .vertical)
+                    .lineLimit(3...6)
                     .focused($focusedField, equals: .back)
 
                 Toggle("学習済み", isOn: $isMemorized)
@@ -49,14 +53,26 @@ struct WordEditorView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
+                        let previous = (word.english, word.japanese, word.isMemorized, word.isDifficult)
                         word.english = frontText.trimmingCharacters(in: .whitespacesAndNewlines)
                         word.japanese = backText.trimmingCharacters(in: .whitespacesAndNewlines)
                         word.isMemorized = isMemorized
                         word.isDifficult = isDifficult
-                        try? modelContext.save()
-                        dismiss()
+                        do {
+                            try modelContext.save()
+                            dismiss()
+                        } catch {
+                            (word.english, word.japanese, word.isMemorized, word.isDifficult) = previous
+                            saveError = "保存できませんでした。\(error.localizedDescription)"
+                        }
                     }
+                    .disabled(frontText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || backText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+            }
+            .alert("保存エラー", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+                Button("OK", role: .cancel) { saveError = nil }
+            } message: {
+                Text(saveError ?? "")
             }
         }
     }

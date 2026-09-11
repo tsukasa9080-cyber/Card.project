@@ -136,7 +136,7 @@ struct TestView: View {
                 .font(.system(size: 64))
                 .foregroundStyle(.yellow)
 
-            Text("テスト完了！")
+            Text(questions.isEmpty ? "出題できる単語がありません" : "テスト完了！")
                 .font(.title.bold())
 
             Text("\(questions.count)問中 \(correctAnswers)問正解")
@@ -179,6 +179,10 @@ struct TestView: View {
 
             Text(testMode == .multipleChoice ? "正しい答えを選んでください" : "答えを入力してください")
                 .foregroundStyle(.secondary)
+            if testMode == .multipleChoice && !usesAI && choices.count < 4 {
+                Text("異なる答えが少ないため、今回は\(choices.count)択で出題します。AIをオンにすると4択を生成できます。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
 
             if isBusy { ProgressView("AIが処理中…") }
             if let errorMessage {
@@ -205,7 +209,7 @@ struct TestView: View {
                         try? modelContext.save()
                         self.aiFeedback = corrected ? "正解に訂正しました。" : "不正解に訂正しました。"
                     }.buttonStyle(.bordered)
-                    Text("AIによる判定です。必要に応じて登録した答えを確認してください。")
+                    Text("登録した答えと照合し、必要に応じてAIで判定しています。判定が違う場合は訂正できます。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if testMode == .typing && aiFeedback == nil {
@@ -266,7 +270,7 @@ struct TestView: View {
 
     private func buttonColor(for choice: String, correctAnswer: String) -> Color {
         guard let selectedAnswer else { return .blue }
-        if choice == correctAnswer { return .green }
+        if AnswerComparison.matches(choice, correctAnswer) { return .green }
         return choice == selectedAnswer ? .red : .blue
     }
 
@@ -289,6 +293,11 @@ struct TestView: View {
     private func answer(_ choice: String, for question: Word) {
         guard selectedAnswer == nil && !isBusy else { return }
         errorMessage = nil
+        if usesAI && testMode == .typing && isCorrect(choice, for: question) {
+            aiFeedback = "正解！ 登録した答えと一致しています。"
+            recordAnswer(choice, correct: true, question: question)
+            return
+        }
         if usesAI && testMode == .typing {
             isBusy = true
             let id = UUID()
@@ -366,7 +375,7 @@ struct TestView: View {
                 do {
                     let generated: MeaningGenerator.Question = try await MeaningGenerator.assist("question", prompt: prompt, expected: expected)
                     guard !Task.isCancelled && requestID == id else { return }
-                    guard generated.choices.count == 4, generated.choices.contains(expected), Set(generated.choices).count == 4 else {
+                    guard generated.choices.count == 4, generated.choices.contains(expected), AnswerComparison.uniqueChoices(generated.choices).count == 4 else {
                         throw MeaningGenerationError.invalidResponse
                     }
                     aiQuestion = generated.question
@@ -380,9 +389,8 @@ struct TestView: View {
             return
         }
 
-        let otherChoices = words
-            .filter { testDirection.answer(for: $0) != testDirection.answer(for: question) }
-            .map { testDirection.answer(for: $0) }
+        let otherChoices = AnswerComparison.uniqueChoices(words.map { testDirection.answer(for: $0) })
+            .filter { !AnswerComparison.matches($0, testDirection.answer(for: question)) }
             .shuffled()
             .prefix(3)
 
@@ -390,8 +398,7 @@ struct TestView: View {
     }
 
     private func isCorrect(_ answer: String, for question: Word) -> Bool {
-        answer.trimmingCharacters(in: .whitespacesAndNewlines)
-            .localizedCaseInsensitiveCompare(testDirection.answer(for: question)) == .orderedSame
+        AnswerComparison.matches(answer, testDirection.answer(for: question))
     }
 
     private func saveResult() {

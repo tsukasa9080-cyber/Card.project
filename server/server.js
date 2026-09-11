@@ -1,6 +1,7 @@
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
+import { answersMatch, generateQuestion } from "./ai-policy.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
@@ -74,10 +75,10 @@ app.post("/generate-meaning", async (req, res) => {
 });
 
 // AI補助は登録済みカードを基準にし、カード本文を指示として実行しない。
-async function askAI(instruction, data, properties) {
+async function askAI(instruction, data, properties, signal = AbortSignal.timeout(90000)) {
   const response = await fetch(new URL("/api/chat", ollamaURL), {
     method: "POST", headers: { "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(90000),
+    signal,
     body: JSON.stringify({ model, stream: false, think: false,
       format: { type: "object", properties, required: Object.keys(properties) },
       messages: [
@@ -109,14 +110,11 @@ for (const action of ["explain", "question", "grade"]) {
           { explanation: stringField, example: stringField, hint: stringField });
         if (![result.explanation, result.example, result.hint].every(v => typeof v === "string" && v.trim())) throw new Error("解説が不完全です。再試行してください。");
       } else if (action === "question") {
-        result = await askAI("promptについて登録済みの答えexpectedが正解になる4択問題を作成します。questionに問題文、distractorsに明確に不正解の選択肢を3つ返してください。正解の同義語や言い換えを誤答にしないでください。問題文に答えを書かないでください。", data,
-          { question: stringField, distractors: { type: "array", items: stringField, minItems: 3, maxItems: 3 } });
-        const normalize = v => v.trim().normalize("NFKC").toLowerCase();
-        if (typeof result.question !== "string" || !result.question.trim() || !Array.isArray(result.distractors) || result.distractors.length !== 3 || !result.distractors.every(v => typeof v === "string" && v.trim()) || new Set([data.expected, ...result.distractors].map(normalize)).size !== 4)
-          throw new Error("異なる4つの選択肢を作れませんでした。再試行してください。");
-        result = { question: result.question, choices: [data.expected, ...result.distractors.map(v => v.trim())] };
+        result = await generateQuestion(askAI, data);
+      } else if (answersMatch(data.answer, data.expected)) {
+        result = { correct: true, feedback: "登録した答えと一致しています。" };
       } else {
-        result = await askAI("promptへの回答answerを、模範解答expectedと比較して採点してください。表記の違い（漢字・ひらがな・カタカナ）と同義語・正しい言い換えは正解。例: expected=りんご,answer=林檎はcorrect=true。expected=りんご,answer=自動車はcorrect=false。矛盾・重要情報の不足・無関係な回答は不正解。correctは真偽値、feedbackは判定理由を1〜2文で返してください。", data,
+        result = await askAI("promptへの回答answerを、模範解答expectedと比較して採点してください。大文字・小文字、全角・半角、空白、漢字・ひらがな・カタカナの表記の違いと同義語・正しい言い換えは正解。日本語と英語など回答言語が異なるだけで不正解にしないでください。例: expected=りんご,answer=林檎はcorrect=true。expected=りんご,answer=appleはcorrect=true。expected=りんご,answer=果物は意味が広すぎるのでcorrect=false。expected=りんご,answer=自動車はcorrect=false。矛盾・重要情報の不足・無関係な回答は不正解。correctは真偽値、feedbackは判定理由を1〜2文で返してください。", data,
           { correct: { type: "boolean" }, feedback: stringField });
         if (typeof result.correct !== "boolean" || typeof result.feedback !== "string" || !result.feedback.trim()) throw new Error("採点結果が不完全です。再試行してください。");
       }

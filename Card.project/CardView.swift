@@ -27,7 +27,7 @@ struct CardView: View {
             // 表面 (英語)
             // ---------------------------------
             RoundedRectangle(cornerRadius: 24)
-                .fill(Color.white)
+                .fill(Color(.secondarySystemGroupedBackground))
                 .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 5)
                 .overlay(
                     VStack(spacing: 16) {
