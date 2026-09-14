@@ -83,14 +83,8 @@ struct StudyView: View {
                     description: Text(studyMode == .difficult ? "テストで間違えた単語がここに表示されます。" : "すべての単語を覚えました。")
                 )
             } else {
-                TabView {
-                    ForEach(displayedWords) { word in
-                        CardView(word: word)
-                            .padding(.vertical, 20)
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .always))
-                .indexViewStyle(.page(backgroundDisplayMode: .always))
+                LoopingStudyCards(words: displayedWords)
+                    .id(displayedWords.map(\.persistentModelID))
             }
         }
         .navigationTitle("\(category)・\(studyMode.rawValue)")
@@ -124,5 +118,60 @@ struct StudyView: View {
 
     private func shuffleWords() {
         randomWords = words.shuffled()
+    }
+}
+
+private struct LoopingStudyCards: View {
+    let words: [Word]
+    @State private var page: Int? = 0
+
+    private var currentIndex: Int {
+        guard !words.isEmpty else { return 0 }
+        return ((page ?? 0) % words.count + words.count) % words.count
+    }
+
+    var body: some View {
+        VStack {
+            if words.count == 1 {
+                CardView(word: words[0])
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !words.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 0) {
+                        // 両端に隣のカードを置き、停止してから同じカードの本来の位置へ戻す。
+                        ForEach(-1..<words.count + 1, id: \.self) { position in
+                            let index = (position + words.count) % words.count
+                            CardView(word: words[index])
+                                .id(page == position)
+                                .padding(.vertical, 20)
+                                .containerRelativeFrame(.horizontal)
+                                .frame(maxHeight: .infinity)
+                                .id(position)
+                        }
+                    }
+                    .scrollTargetLayout()
+                }
+                .scrollIndicators(.hidden)
+                .scrollTargetBehavior(.paging)
+                .scrollPosition(id: $page)
+                .onScrollPhaseChange { _, phase in
+                    guard phase == .idle, let page,
+                          page < 0 || page >= words.count else { return }
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        self.page = currentIndex
+                    }
+                }
+            }
+
+            if !words.isEmpty {
+                Text("\(currentIndex + 1) / \(words.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 12)
+                    .accessibilityLabel("全\(words.count)語中\(currentIndex + 1)語目")
+            }
+        }
     }
 }

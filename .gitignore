@@ -1,0 +1,5 @@
+.DS_Store
+.presentation-build/
+DerivedData/
+build/
+~$*

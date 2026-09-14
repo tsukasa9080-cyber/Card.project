@@ -8,22 +8,31 @@ export function answersMatch(answer, expected) {
 // 正解をAIに書き直させず、異なる誤答だけを採用する。
 export async function generateQuestion(ask, data) {
   const distractors = [];
-  const seen = new Set([normalizeAnswer(data.expected)]);
+  const expectedKey = normalizeAnswer(data.expected);
+  const seen = new Set([expectedKey]);
   let question = "";
-  const stringField = { type: "string", minLength: 1 };
+  const stringField = { type: "string" };
   const signal = AbortSignal.timeout(80000);
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = await ask(
-      "promptについて登録済みの答えexpectedが正解になる4択問題を作成します。questionに問題文、distractorsに明確に不正解の選択肢を3つ返してください。3つは互いに異なる内容にし、正解の同義語・言い換え・excludedにある選択肢を含めないでください。問題文に答えを書かないでください。",
-      { ...data, excluded: [data.expected, ...distractors] },
-      { question: stringField, distractors: { type: "array", items: stringField, minItems: 3, maxItems: 3 } },
-      signal
-    );
+    let result;
+    try {
+      result = await ask(
+        "単語promptの意味を問う4択問題を作成。expectedが正解です。questionに答えを含まない短い問題文、distractorsに明らかに間違った答えを3つ返す。正解と同義の語、同じ候補、excludedの候補は使わない。各候補は短い語句にする。",
+        { ...data, excluded: distractors },
+        { question: stringField, distractors: { type: "array", items: stringField } },
+        signal
+      );
+    } catch (error) {
+      if (attempt === 1 || signal.aborted) throw error;
+      continue;
+    }
     if (typeof result?.question === "string" && result.question.trim()) question = result.question.trim();
     for (const value of Array.isArray(result?.distractors) ? result.distractors : []) {
       if (typeof value !== "string") continue;
       const key = normalizeAnswer(value);
       if (!key || seen.has(key)) continue;
+      // 長い正解の一部（例：「りんご。バラ科…」に対する「りんご」）も誤答にしない。
+      if (expectedKey.includes(key) || key.includes(expectedKey)) continue;
       seen.add(key);
       distractors.push(value.trim());
     }

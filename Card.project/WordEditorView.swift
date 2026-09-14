@@ -33,17 +33,16 @@ struct WordEditorView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($focusedField, equals: .front)
-                TextField("裏面", text: $backText, axis: .vertical)
-                    .lineLimit(3...6)
-                    .focused($focusedField, equals: .back)
-
                 Toggle("学習済み", isOn: $isMemorized)
                 Toggle("苦手単語", isOn: $isDifficult)
+
+                Section("意味（裏面）") {
+                    TextField("意味を入力", text: $backText, axis: .vertical)
+                        .lineLimit(3, reservesSpace: true)
+                        .focused($focusedField, equals: .back)
+                }
             }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                focusedField = nil
-            }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("単語を編集")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

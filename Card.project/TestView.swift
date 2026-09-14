@@ -37,8 +37,9 @@ enum TestDirection: String, CaseIterable, Identifiable {
 }
 
 enum TestScope: String, CaseIterable, Identifiable {
-    case all = "すべて"
+    case all = "未習得"
     case difficult = "苦手のみ"
+    case review = "復習"
 
     var id: Self { self }
 
@@ -46,6 +47,15 @@ enum TestScope: String, CaseIterable, Identifiable {
         switch self {
         case .all: "rectangle.stack"
         case .difficult: "exclamationmark.triangle.fill"
+        case .review: "arrow.clockwise"
+        }
+    }
+
+    func includes(_ word: Word) -> Bool {
+        switch self {
+        case .all: !word.isMemorized
+        case .difficult: !word.isMemorized && word.isDifficult
+        case .review: word.isMemorized
         }
     }
 }
@@ -56,6 +66,7 @@ struct TestView: View {
     let testMode: TestMode
     let testDirection: TestDirection
     let testScope: TestScope
+    let questionLimit: Int
     @Query private var words: [Word]
 
     @State private var questions: [Word] = []
@@ -73,30 +84,17 @@ struct TestView: View {
     @State private var aiTask: Task<Void, Never>?
     @State private var requestID = UUID()
     @State private var recordedCorrect = false
-    @State private var previousMemorized = false
-    @State private var previousDifficult = false
+    @State private var previousProgress: LearningProgress?
+    @State private var testSessionID = UUID().uuidString
 
 
-    init(category: String, testMode: TestMode, testDirection: TestDirection, testScope: TestScope) {
+    init(category: String, testMode: TestMode, testDirection: TestDirection, testScope: TestScope, questionLimit: Int = 10) {
         self.category = category
         self.testMode = testMode
         self.testDirection = testDirection
         self.testScope = testScope
-        if testScope == .difficult {
-            _words = Query(
-                filter: #Predicate<Word> { word in
-                    word.category == category && word.isDifficult
-                },
-                sort: \Word.english
-            )
-        } else {
-            _words = Query(
-                filter: #Predicate<Word> { word in
-                    word.category == category
-                },
-                sort: \Word.english
-            )
-        }
+        self.questionLimit = questionLimit
+        _words = Query(filter: #Predicate<Word> { $0.category == category }, sort: \Word.english)
     }
 
     private var currentQuestion: Word? {
@@ -132,7 +130,7 @@ struct TestView: View {
 
     private var resultView: some View {
         VStack(spacing: 24) {
-            Image(systemName: correctAnswers == questions.count ? "trophy.fill" : "checkmark.seal.fill")
+            Image(systemName: !questions.isEmpty && correctAnswers == questions.count ? "trophy.fill" : "checkmark.seal.fill")
                 .font(.system(size: 64))
                 .foregroundStyle(.yellow)
 
@@ -202,16 +200,16 @@ struct TestView: View {
                     Text(aiFeedback).font(.callout)
                     Button(recordedCorrect ? "不正解に訂正" : "正解に訂正") {
                         let corrected = !recordedCorrect
-                        correctAnswers += corrected ? 1 : -1
-                        recordedCorrect = corrected
-                        question.isMemorized = corrected ? true : previousMemorized
-                        question.isDifficult = corrected ? previousDifficult : true
-                        try? modelContext.save()
-                        self.aiFeedback = corrected ? "正解に訂正しました。" : "不正解に訂正しました。"
+                        if correctRecordedAnswer(corrected, question: question) {
+                            self.aiFeedback = corrected ? "正解に訂正しました。" : "不正解に訂正しました。"
+                        }
                     }.buttonStyle(.bordered)
                     Text("登録した答えと照合し、必要に応じてAIで判定しています。判定が違う場合は訂正できます。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+
+                Text(question.isMemorized ? "覚えた単語になりました。通常テストから外れ、復習で出題できます。" : "連続正解 \(question.consecutiveTestCorrect) / 3回")
+                    .font(.subheadline).foregroundStyle(.secondary)
                 if testMode == .typing && aiFeedback == nil {
                     Text(isCorrect(selectedAnswer ?? "", for: question) ? "正解！" : "不正解　正解: \(testDirection.answer(for: question))")
                         .font(.headline)
@@ -281,7 +279,13 @@ struct TestView: View {
         aiQuestion = nil
         aiFeedback = nil
         errorMessage = nil
-        questions = words.shuffled()
+        let candidates = words.filter { testScope.includes($0) }
+        var generator = SystemRandomNumberGenerator()
+        questions = WeightedSampling.select(candidates, count: questionLimit, weight: {
+            testScope == .review ? 1 : $0.learningProgress.selectionWeight
+        }, using: &generator)
+        testSessionID = UUID().uuidString
+        previousProgress = nil
         questionIndex = 0
         correctAnswers = 0
         selectedAnswer = nil
@@ -323,30 +327,50 @@ struct TestView: View {
 
     private func recordAnswer(_ choice: String, correct: Bool, question: Word) {
         guard selectedAnswer == nil else { return }
-        previousMemorized = question.isMemorized
-        previousDifficult = question.isDifficult
+        let previous = question.learningProgress
+        question.learningProgress = previous.recording(correct: correct, testID: testSessionID)
+        do {
+            try modelContext.save()
+        } catch {
+            question.learningProgress = previous
+            aiFeedback = nil
+            errorMessage = "回答を保存できませんでした。もう一度回答してください。\(error.localizedDescription)"
+            return
+        }
+        previousProgress = previous
         recordedCorrect = correct
         selectedAnswer = choice
-        if correct {
-            correctAnswers += 1
-            question.isMemorized = true
-        } else {
-            question.isDifficult = true
+        correctAnswers += correct ? 1 : 0
+    }
+
+    private func correctRecordedAnswer(_ correct: Bool, question: Word) -> Bool {
+        guard let previousProgress else { return false }
+        let saved = question.learningProgress
+        question.learningProgress = previousProgress.recording(correct: correct, testID: testSessionID)
+        do {
+            try modelContext.save()
+        } catch {
+            question.learningProgress = saved
+            errorMessage = "訂正を保存できませんでした。\(error.localizedDescription)"
+            return false
         }
-        try? modelContext.save()
+        correctAnswers += correct ? 1 : -1
+        recordedCorrect = correct
+        errorMessage = nil
+        return true
     }
 
     private func nextQuestion() {
         guard !isBusy else { return }
-        aiQuestion = nil
-        aiFeedback = nil
         errorMessage = nil
         if questionIndex + 1 == questions.count {
-            saveResult()
-            hasFinished = true
+            if saveResult() { hasFinished = true }
         } else {
+            aiQuestion = nil
+            aiFeedback = nil
             questionIndex += 1
             selectedAnswer = nil
+            previousProgress = nil
             typedAnswer = ""
             prepareChoices()
         }
@@ -401,14 +425,20 @@ struct TestView: View {
         AnswerComparison.matches(answer, testDirection.answer(for: question))
     }
 
-    private func saveResult() {
-        modelContext.insert(
-            TestResult(
+    private func saveResult() -> Bool {
+        let result = TestResult(
                 category: category,
                 correctAnswers: correctAnswers,
                 totalQuestions: questions.count
-            )
         )
-        try? modelContext.save()
+        modelContext.insert(result)
+        do {
+            try modelContext.save()
+            return true
+        } catch {
+            modelContext.delete(result)
+            errorMessage = "結果を保存できませんでした。もう一度「結果を見る」を押してください。\(error.localizedDescription)"
+            return false
+        }
     }
 }

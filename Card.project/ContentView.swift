@@ -22,6 +22,7 @@ struct ContentView: View {
         }
     }
     @State private var selectedTab: MainTab = .words
+    @State private var isStudying = false
 
     private enum EntryField: Hashable {
         case front
@@ -40,6 +41,7 @@ struct ContentView: View {
     @State private var testMode: TestMode = .multipleChoice
     @State private var testDirection: TestDirection = .frontToBack
     @State private var testScope: TestScope = .all
+    @AppStorage("testQuestionLimit") private var testQuestionLimit = 10
     @State private var newEnglish = ""
     @State private var newJapanese = ""
     @State private var newWordBookName = ""
@@ -109,7 +111,7 @@ struct ContentView: View {
     }
 
     private var testWords: [Word] {
-        testScope == .all ? displayedWords : difficultWords
+        displayedWords.filter { testScope.includes($0) }
     }
 
     private var canTakeTest: Bool { !testWords.isEmpty }
@@ -264,7 +266,11 @@ struct ContentView: View {
                 } label: {
                     VStack(spacing: 4) {
                         Image(systemName: tab.icon).font(.system(size: 21))
-                        Text(tab.title).font(.caption)
+                        Text(tab.title)
+                            .font(.caption)
+                            // ラベルの左右に全角文字のおよそ半分ずつ余白を置き、
+                            // 太字表示時も隣の項目と詰まりすぎないようにする。
+                            .padding(.horizontal, 4)
                     }
                     .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.secondary)
                     .frame(maxWidth: .infinity, minHeight: 52)
@@ -297,7 +303,7 @@ struct ContentView: View {
                         .pickerStyle(.segmented)
                     }
 
-                    NavigationLink(destination: StudyView(category: selectedCategory, studyMode: studyMode)) {
+                    Button { isStudying = true } label: {
                         Label("\(studyMode.rawValue)単語を学習（\(selectedStudyWords.count)語）", systemImage: studyMode.iconName)
                             .font(.headline)
                             .foregroundStyle(.white)
@@ -310,6 +316,16 @@ struct ContentView: View {
                 .padding()
             }
             .navigationTitle("学習")
+        }
+        .fullScreenCover(isPresented: $isStudying) {
+            NavigationStack {
+                StudyView(category: selectedCategory, studyMode: studyMode)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("戻る", systemImage: "chevron.left") { isStudying = false }
+                        }
+                    }
+            }
         }
     }
 
@@ -378,6 +394,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 wordBookSelector
                     .padding()
+                    .background(Color(.systemGroupedBackground))
 
                 List {
                     Section {
@@ -391,11 +408,11 @@ struct ContentView: View {
                         wordRow(word)
                     }
                 }
+                .scrollDismissesKeyboard(.interactively)
+                .scrollContentBackground(.hidden)
+                .background(Color(.systemGroupedBackground))
             }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                dismissKeyboard()
-            }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("単語登録・編集")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -461,6 +478,11 @@ struct ContentView: View {
             .accessibilityLabel("\(word.frontText)、\(word.backText)")
             .accessibilityValue(selectedWordIDs.contains(word.persistentModelID) ? "選択中" : "未選択")
             .accessibilityHint("タップして削除対象の選択を切り替えます")
+
+            if word.testAttempts > 0 {
+                Text("正答率 \(Int(word.learningProgress.correctRate * 100))%（\(word.testCorrectAnswers)/\(word.testAttempts)回）・連続正解 \(word.consecutiveTestCorrect)/3回")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
 
             HStack(spacing: 16) {
                 Button {
@@ -547,8 +569,16 @@ struct ContentView: View {
                         }
                     }
 
-                    NavigationLink(destination: TestView(category: selectedCategory, testMode: testMode, testDirection: testDirection, testScope: testScope)) {
-                        Label("\(testScope.rawValue)・\(testDirection.rawValue)・\(testMode.rawValue)テストを受ける（\(testWords.count)語）", systemImage: testMode.iconName)
+                    Stepper("1回の問題数：\(testQuestionLimit)問", value: $testQuestionLimit, in: 1...100)
+                    Text(testScope == .review
+                         ? "覚えた単語を均等に出題します。間違えた単語は未習得に戻ります。"
+                         : "最初の3回答は均等に、その後は正答率が低い単語を優先します。別々のテストで3回連続正解すると「覚えた」になります。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("候補\(testWords.count)語から最大\(testQuestionLimit)問を選び、同じ単語は1回だけ出題します。候補が問題数以下なら全語を出題します。")
+                        .font(.caption).foregroundStyle(.secondary)
+
+                    NavigationLink(destination: TestView(category: selectedCategory, testMode: testMode, testDirection: testDirection, testScope: testScope, questionLimit: testQuestionLimit)) {
+                        Label("\(testScope.rawValue)・\(testDirection.rawValue)・\(testMode.rawValue)テストを受ける（\(min(testQuestionLimit, testWords.count))問）", systemImage: testMode.iconName)
                             .font(.headline)
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
@@ -556,6 +586,10 @@ struct ContentView: View {
                             .background(canTakeTest ? .orange : .gray, in: RoundedRectangle(cornerRadius: 12))
                     }
                     .disabled(!canTakeTest)
+                    if !canTakeTest {
+                        Text(testScope == .review ? "覚えた単語がまだありません。" : "出題対象の単語がありません。覚えた単語は「復習」で確認できます。")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
 
                 }
                 .padding()
@@ -700,24 +734,14 @@ struct ContentView: View {
         guard !newName.isEmpty, newName != selectedCategory, !categories.contains(newName) else { return }
 
         let oldName = selectedCategory
-        if oldName == defaultCategoryName {
-            defaultCategoryName = newName
+        do {
+            try WordBookStore.rename(from: oldName, to: newName, in: modelContext.container)
+            if oldName == defaultCategoryName { defaultCategoryName = newName }
+            selectedCategory = newName
+            renamedWordBookName = ""
+        } catch {
+            saveError = "単語帳名を変更できませんでした。\(error.localizedDescription)"
         }
-        if !wordBooks.contains(where: { $0.name == newName }) {
-            modelContext.insert(WordBook(name: newName))
-        }
-        for wordBook in wordBooks where wordBook.name == oldName {
-            wordBook.name = newName
-        }
-        for word in words where word.category == oldName {
-            word.category = newName
-        }
-        for result in testResults where result.category == oldName {
-            result.category = newName
-        }
-        try? modelContext.save()
-        selectedCategory = newName
-        renamedWordBookName = ""
     }
 
     private func toggleWordSelection(_ word: Word) {
